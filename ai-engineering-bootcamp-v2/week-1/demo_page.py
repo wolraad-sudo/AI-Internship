@@ -1,7 +1,7 @@
 """Single test page for all five /ask demo stages.
 
 Run this page:
-  streamlit run demo_page.py
+  python -m streamlit run demo_page.py
 """
 
 import json
@@ -15,7 +15,7 @@ STAGES = [
     {
         "num": 1,
         "title": "Bare /ask",
-        "serve": "uvicorn serve_stage1:app --port 8000 --reload",
+        "serve": "python -m uvicorn serve_stage1:app --port 8000 --reload",
         "look_for": "Plain `answer` string and real `tokens_used`.",
         "dummy_question": "What is Retrieval-Augmented Generation in one sentence?",
         "fields": [],
@@ -23,7 +23,7 @@ STAGES = [
     {
         "num": 2,
         "title": "Structured output",
-        "serve": "uvicorn serve_stage2:app --port 8000 --reload",
+        "serve": "python -m uvicorn serve_stage2:app --port 8000 --reload",
         "look_for": "`answer` is an object with `confidence` and `sources_needed`.",
         "dummy_question": "Explain what an embedding is in one sentence.",
         "fields": [],
@@ -31,7 +31,7 @@ STAGES = [
     {
         "num": 3,
         "title": "Guardrail + retry",
-        "serve": "uvicorn serve_stage3:app --port 8000 --reload",
+        "serve": "python -m uvicorn serve_stage3:app --port 8000 --reload",
         "look_for": "Normal question works; `force_bad` triggers retry then succeeds.",
         "dummy_question": "What is a vector database?",
         "dummy_force_bad": True,
@@ -40,7 +40,7 @@ STAGES = [
     {
         "num": 4,
         "title": "Model selectable",
-        "serve": "uvicorn serve_stage4:app --port 8000 --reload",
+        "serve": "python -m uvicorn serve_stage4:app --port 8000 --reload",
         "look_for": "`model` and `latency_ms` in the response; swap models live.",
         "dummy_question": "What is chunking in RAG?",
         "dummy_model": "gpt-4o-mini",
@@ -49,7 +49,7 @@ STAGES = [
     {
         "num": 5,
         "title": "Cost readout",
-        "serve": "uvicorn serve_stage5:app --port 8000 --reload",
+        "serve": "python -m uvicorn serve_stage5:app --port 8000 --reload",
         "look_for": "`cost_usd` closes the loop — same prompt, different model, different cost.",
         "dummy_question": "What is Retrieval-Augmented Generation in one sentence?",
         "dummy_model": "gpt-4o",
@@ -95,8 +95,7 @@ def render_curl(base_url: str, payload: dict) -> str:
 
 def render_terminal_block(stage: dict, base_url: str, payload: dict) -> str:
     return f"""cd {WORKDIR_CMD}
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 {stage["serve"]}
 
 # In another terminal — test this stage:
@@ -111,8 +110,8 @@ base_url = st.sidebar.text_input("API base URL", "http://127.0.0.1:8000")
 
 st.sidebar.markdown("### Run this page")
 st.sidebar.code(
-    f"cd {WORKDIR_CMD}\nsource .venv/bin/activate\nstreamlit run demo_page.py",
-    language="bash",
+    f"cd {WORKDIR_CMD}\npython -m streamlit run demo_page.py",
+    language="powershell",
 )
 
 tabs = st.tabs([f"Demo {s['num']}: {s['title']}" for s in STAGES])
