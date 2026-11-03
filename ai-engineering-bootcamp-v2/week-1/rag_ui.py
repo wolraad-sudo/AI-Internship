@@ -59,6 +59,7 @@ with ask_tab:
         col_k, col_model = st.columns(2)
         top_k = col_k.slider("Chunks to retrieve (top_k)", 1, 20, 5, key="top_k")
         model = col_model.selectbox("Model", ["gpt-4o", "gpt-4o-mini"], key="model")
+        rerank = st.checkbox("Rerank candidates before answering", value=True, key="rerank")
         asked = st.form_submit_button("Ask", type="primary", key="ask_btn")
 
     if asked:
@@ -67,7 +68,7 @@ with ask_tab:
         else:
             with st.spinner("Retrieving and answering..."):
                 status, data = call_api(
-                    "POST", base_url, "/ask", {"question": question, "top_k": top_k, "model": model}
+                    "POST", base_url, "/ask", {"question": question, "top_k": top_k, "model": model, "rerank": rerank}
                 )
             if status != 200:
                 show_error(status, data)
@@ -81,8 +82,9 @@ with ask_tab:
                     st.markdown("**Cited documents:** " + " ".join(f"`{doc_id}`" for doc_id in citations))
 
                 if "retrieved_chunk_ids" in data:
+                    order = {True: "reranked", False: "vector order"}.get(data.get("reranked"), "vector order")
                     st.markdown(
-                        "**Retrieved chunks:** "
+                        f"**Retrieved chunks ({order}):** "
                         + (" ".join(f"`{chunk_id}`" for chunk_id in data["retrieved_chunk_ids"]) or "none")
                     )
                 else:

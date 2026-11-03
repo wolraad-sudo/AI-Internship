@@ -37,6 +37,11 @@ if not 0 <= CHUNK_OVERLAP < CHUNK_SIZE:
 # Batch size for embedding and upsert calls — well under both APIs' request limits.
 BATCH_SIZE = 100
 
+# Reranking — fetch a wider candidate pool by vector similarity, then let a cross-encoder
+# (hosted by Pinecone, same API key) re-order it by reading question and chunk together.
+RERANK_MODEL = os.getenv("RERANK_MODEL", "bge-reranker-v2-m3")
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
+
 openai_client = OpenAI()  # Reads OPENAI_API_KEY from the environment.
 
 
@@ -162,6 +167,43 @@ def query_chunks(vector: list[float], top_k: int = 4) -> list[dict]:
             }
         )
     return matches
+
+
+def rerank_chunks(question: str, matches: list[dict], top_n: int) -> tuple[list[dict], bool]:
+    """
+    Re-order vector matches with the reranker and keep the best top_n.
+    Returns (chunks, reranked). On any reranker failure (e.g. quota) it falls back to vector order,
+    so retrieval degrades instead of breaking /ask.
+    """
+
+    if len(matches) <= 1:
+        return matches[:top_n], False
+    try:
+        result = get_pinecone().inference.rerank(
+            model=RERANK_MODEL,
+            query=question,
+            documents=[{"id": m["id"], "text": m["text"]} for m in matches],
+            top_n=top_n,
+            return_documents=False,
+        )
+    except Exception:
+        return matches[:top_n], False
+
+    reranked = []
+    for row in result.data:
+        chunk = dict(matches[row.index])
+        chunk["rerank_score"] = round(row.score, 4)
+        reranked.append(chunk)
+    return reranked, True
+
+
+def retrieve(question: str, vector: list[float], top_k: int, rerank: bool) -> tuple[list[dict], bool]:
+    """Vector search, optionally widened and reranked. Returns (top_k chunks, whether reranking ran)."""
+
+    if not rerank:
+        return query_chunks(vector, top_k=top_k), False
+    candidates = query_chunks(vector, top_k=max(top_k, RERANK_CANDIDATES))
+    return rerank_chunks(question, candidates, top_n=top_k)
 
 
 def pinecone_health() -> dict:

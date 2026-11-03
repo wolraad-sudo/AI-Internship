@@ -77,6 +77,7 @@ class AskRequest(BaseModel):
     model: str | None = None  # Stage 4 — optional override to swap models live.
     use_rag: bool = True  # Session 2 — false gives the exact Session 1 behaviour and response.
     top_k: int = 5  # Session 2 — how many chunks to retrieve (1–20).
+    rerank: bool = True  # Session 2 add-on — rerank a wider candidate pool before taking top_k.
 
 
 class AskResponse(BaseModel):
@@ -88,6 +89,7 @@ class AskResponse(BaseModel):
     latency_ms: int
     cost_usd: float
     retrieved_chunk_ids: list[str] | None = None  # Session 2 — omitted when use_rag is false.
+    reranked: bool | None = None  # Whether reranking ran (false if off or it fell back to vector order).
 
 
 class IngestRequest(BaseModel):
@@ -216,6 +218,7 @@ def ask(body: AskRequest) -> AskResponse:
     retrieved_chunk_ids: list[str] | None = None
     retrieved_document_ids: set[str] = set()
     embedding_tokens = 0
+    reranked: bool | None = None
 
     if body.use_rag:
         question = body.question.strip()
@@ -230,7 +233,7 @@ def ask(body: AskRequest) -> AskResponse:
         except OpenAIError as exc:
             raise HTTPException(status_code=502, detail=f"Embedding failed: {exc}") from exc
         try:
-            matches = rag.query_chunks(vectors[0], top_k=body.top_k)
+            matches, reranked = rag.retrieve(question, vectors[0], top_k=body.top_k, rerank=body.rerank)
         except Exception as exc:  # Pinecone missing key, unreachable, or index not created yet.
             raise HTTPException(status_code=503, detail=f"Vector store query failed: {exc}") from exc
 
@@ -248,6 +251,7 @@ def ask(body: AskRequest) -> AskResponse:
                 latency_ms=int((time.perf_counter() - start) * 1000),
                 cost_usd=round(rag.embedding_cost_usd(embedding_tokens), 6),
                 retrieved_chunk_ids=[],
+                reranked=reranked,
             )
         context = format_context(matches)
 
@@ -282,6 +286,7 @@ def ask(body: AskRequest) -> AskResponse:
                 latency_ms=latency_ms,
                 cost_usd=round(cost_usd, 6),
                 retrieved_chunk_ids=retrieved_chunk_ids,
+                reranked=reranked,
             )
         except (ValidationError, ValueError) as exc:
             last_error = str(exc)
@@ -346,7 +351,7 @@ def ingest(body: IngestRequest) -> IngestResponse:
 
 
 @app.get("/debug/retrieve")
-def debug_retrieve(q: str = "", top_k: int = 5) -> dict:
+def debug_retrieve(q: str = "", top_k: int = 5, rerank: bool = True) -> dict:
     """
     Retrieval only — embeds the question and returns the nearest chunks. Never calls the LLM,
     so you can check what /ask would see before wiring generation.
@@ -368,13 +373,15 @@ def debug_retrieve(q: str = "", top_k: int = 5) -> dict:
         raise HTTPException(status_code=502, detail=f"Embedding failed: {exc}") from exc
 
     try:
-        matches = rag.query_chunks(vectors[0], top_k=top_k)
+        matches, reranked = rag.retrieve(question, vectors[0], top_k=top_k, rerank=rerank)
     except Exception as exc:  # Pinecone missing key, unreachable, or index not created yet.
         raise HTTPException(status_code=503, detail=f"Vector store query failed: {exc}") from exc
 
     return {
         "query": question,
         "top_k": top_k,
+        "reranked": reranked,
+        "rerank_model": rag.RERANK_MODEL if reranked else None,
         "embedding_model": rag.EMBEDDING_MODEL,
         "index_name": rag.PINECONE_INDEX_NAME,
         "namespace": rag.PINECONE_NAMESPACE,
