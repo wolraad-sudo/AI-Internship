@@ -1,0 +1,93 @@
+{
+  "policy": "Client Due Diligence and Periodic Review Policy",
+  "policy_version": "3.2",
+  "policy_effective": "2025-01-01",
+  "extracted_by": "gpt-4o",
+  "reviewed": true,
+  "reviewed_by": "",
+  "reviewed_on": "",
+  "flags_for_review": {},
+  "rules": {
+    "CDD-1.2": {
+      "individual_min_shares_held_pct": 10,
+      "corporate_min_shares_held_pct": 10
+    },
+    "CDD-2.3": {
+      "relevant_person_is_pep": true,
+      "client_has_confirmed_adverse_media": true,
+      "max_corporate_layers": 2,
+      "max_outstanding_days": 180
+    },
+    "CDD-3.1": {
+      "high_medium_review_frequency_months": 12,
+      "low_review_frequency_months": 24
+    },
+    "CDD-3.2": {
+      "report_overdue_reviews": true,
+      "report_frequency": "monthly",
+      "record_days_overdue": true
+    },
+    "CDD-3.3": {
+      "review_completion_days": 30,
+      "min_share_transfer_pct": 10
+    },
+    "CDD-3.4": {
+      "event_review_max_days": 30,
+      "must_inform_mlro": true
+    },
+    "CDD-4.2": {
+      "min_ownership_pct": 25
+    },
+    "CDD-5.2": {
+      "must_be_unexpired": true,
+      "identity_document_expires_within_days": 90
+    },
+    "CDD-5.3": {
+      "certification_max_age_months": 3
+    },
+    "CDD-5.4": {
+      "must_be_clearly_legible": true
+    },
+    "CDD-6.2": {
+      "max_age_months": 3
+    },
+    "CDD-6.3": {
+      "max_age_months": 12,
+      "must_match_registers": true,
+      "refresh_max_age_months": 3
+    },
+    "CDD-7.2": {
+      "max_age_months": 6
+    },
+    "CDD-7.3": {
+      "max_age_months": 12,
+      "must_match_beneficial_owners": true
+    },
+    "CDD-8.1": {
+      "must_agree_identity_document": true,
+      "must_agree_proof_of_address": true,
+      "must_agree_statutory_registers": true
+    },
+    "CDD-10.1": {
+      "update_within_days": 30
+    },
+    "CDD-10.2": {
+      "must_reconcile_beneficial_ownership_register": true,
+      "must_reconcile_register_of_members": true,
+      "must_reconcile_register_of_members_corporate_shareholder": true
+    },
+    "CDD-10.3": {
+      "acquisition_threshold_usd": 500000,
+      "requires_source_of_wealth_declaration": true,
+      "requires_source_of_funds_evidence": true,
+      "requires_documentary_evidence_for_high_risk": true
+    },
+    "CDD-11.1": {
+      "response_period_days": 30
+    },
+    "CDD-11.2": {
+      "escalation_threshold_days": 90,
+      "high_rating_threshold_days": 180
+    }
+  }
+}

@@ -3,7 +3,9 @@
 Run `python rag.py` to print the Pinecone health check without starting the server.
 """
 
+import json
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -41,6 +43,14 @@ BATCH_SIZE = 100
 # (hosted by Pinecone, same API key) re-order it by reading question and chunk together.
 RERANK_MODEL = os.getenv("RERANK_MODEL", "bge-reranker-v2-m3")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
+
+# Hybrid retrieval for rule-based policies (KYC architecture doc, Session 2 step 3).
+# Rule IDs in a question ("get CDD-5.3") are fetched directly instead of searched for.
+RULE_ID_PATTERN = re.compile(r"\b[A-Z]{2,}-\d+\.\d+\b")
+# Definitions every answer about a policy needs, added whenever that policy's rules are retrieved.
+POLICY_DEFINITIONS = {"CDD": ["CDD-1.3", "CDD-1.4"]}  # Review date; month calculations.
+# Metadata fields /ask and /debug/retrieve may filter on.
+FILTERABLE_FIELDS = {"topic", "review_context", "applies_to", "rule_id", "document_id", "policy_version"}
 
 openai_client = OpenAI()  # Reads OPENAI_API_KEY from the environment.
 
@@ -147,26 +157,60 @@ def upsert_chunks(
     return len(records)
 
 
-def query_chunks(vector: list[float], top_k: int = 4) -> list[dict]:
-    """Nearest chunks for an already-embedded question."""
+def to_chunk(chunk_id: str, metadata: dict | None, score: float | None, via: str) -> dict:
+    """One retrieved chunk. `via` says how it was found: search, rule id, reference, definition."""
+
+    metadata = dict(metadata or {})
+    chunk = {
+        "id": chunk_id,
+        "score": round(score, 4) if score is not None else None,  # Cosine similarity: higher is closer.
+        "via": via,
+        "document_id": metadata.pop("document_id", ""),
+        "chunk_index": int(metadata.pop("chunk_index", -1)),
+        "source": metadata.pop("source", ""),
+        "text": metadata.pop("text", ""),
+    }
+    if "parameters" in metadata:  # Stored as JSON text because Pinecone metadata can't nest objects.
+        metadata["parameters"] = json.loads(metadata["parameters"])
+    chunk["metadata"] = metadata  # rule_id, topic, applies_to, references, ... for rule-based documents.
+    return chunk
+
+
+def build_filter(filters: dict[str, str] | None) -> dict | None:
+    """{"topic": "address"} -> Pinecone filter. $in matches both plain and list fields (applies_to)."""
+
+    if not filters:
+        return None
+    return {field: {"$in": [value]} for field, value in filters.items()}
+
+
+def query_chunks(vector: list[float], top_k: int = 4, filters: dict[str, str] | None = None) -> list[dict]:
+    """Nearest chunks for an already-embedded question, optionally narrowed by metadata."""
 
     result = get_index().query(
-        vector=vector, top_k=top_k, namespace=PINECONE_NAMESPACE, include_metadata=True
+        vector=vector,
+        top_k=top_k,
+        namespace=PINECONE_NAMESPACE,
+        include_metadata=True,
+        filter=build_filter(filters),
     )
-    matches = []
-    for match in result.matches:
-        metadata = match.metadata or {}
-        matches.append(
-            {
-                "id": match.id,
-                "score": round(match.score, 4),  # Cosine similarity: higher is closer.
-                "document_id": metadata.get("document_id", ""),
-                "chunk_index": int(metadata.get("chunk_index", -1)),
-                "source": metadata.get("source", ""),
-                "text": metadata.get("text", ""),
-            }
-        )
-    return matches
+    return [to_chunk(match.id, match.metadata, match.score, "search") for match in result.matches]
+
+
+def fetch_documents(document_ids: list[str], via: str) -> list[dict]:
+    """Every chunk of the given documents (rule IDs for a policy), in the order asked for."""
+
+    index = get_index()
+    chunk_ids = [
+        item.id
+        for document_id in document_ids
+        for page in index.list(prefix=f"{document_id}#", namespace=PINECONE_NAMESPACE)
+        for item in page.vectors
+    ]
+    if not chunk_ids:
+        return []
+    vectors = index.fetch(ids=chunk_ids, namespace=PINECONE_NAMESPACE).vectors
+    return [to_chunk(cid, vectors[cid].metadata, None, via) for cid in chunk_ids if cid in vectors]
 
 
 def rerank_chunks(question: str, matches: list[dict], top_n: int) -> tuple[list[dict], bool]:
@@ -176,6 +220,8 @@ def rerank_chunks(question: str, matches: list[dict], top_n: int) -> tuple[list[
     so retrieval degrades instead of breaking /ask.
     """
 
+    if top_n <= 0:
+        return [], False
     if len(matches) <= 1:
         return matches[:top_n], False
     try:
@@ -197,13 +243,58 @@ def rerank_chunks(question: str, matches: list[dict], top_n: int) -> tuple[list[
     return reranked, True
 
 
-def retrieve(question: str, vector: list[float], top_k: int, rerank: bool) -> tuple[list[dict], bool]:
-    """Vector search, optionally widened and reranked. Returns (top_k chunks, whether reranking ran)."""
+def expand_linked_rules(chunks: list[dict]) -> list[dict]:
+    """
+    Follow each retrieved rule's `references` one hop (a hit on CDD-8.2 also brings CDD-5.3) and add the
+    policy's definitions (CDD-1.3, CDD-1.4). Returns only chunks not already retrieved.
+    """
 
-    if not rerank:
-        return query_chunks(vector, top_k=top_k), False
-    candidates = query_chunks(vector, top_k=max(top_k, RERANK_CANDIDATES))
-    return rerank_chunks(question, candidates, top_n=top_k)
+    have = {c["document_id"] for c in chunks}
+    wanted: list[tuple[str, str]] = []  # (rule ID, via)
+    for chunk in chunks:
+        for ref in chunk["metadata"].get("references", []):
+            if RULE_ID_PATTERN.fullmatch(ref):  # Section refs like "CDD-5" would pull in whole sections.
+                wanted.append((ref, f"reference from {chunk['document_id']}"))
+    prefixes = {c["metadata"]["rule_id"].split("-")[0] for c in chunks if c["metadata"].get("rule_id")}
+    for prefix in sorted(prefixes):
+        wanted += [(rule_id, "definition") for rule_id in POLICY_DEFINITIONS.get(prefix, [])]
+
+    expanded: list[dict] = []
+    for rule_id, via in wanted:
+        if rule_id in have:
+            continue
+        have.add(rule_id)
+        expanded += fetch_documents([rule_id], via)
+    return expanded
+
+
+def retrieve(
+    question: str,
+    vector: list[float],
+    top_k: int,
+    rerank: bool,
+    filters: dict[str, str] | None = None,
+) -> tuple[list[dict], list[dict], bool]:
+    """
+    Hybrid retrieval. Returns (top_k chunks, linked chunks added on top, whether reranking ran).
+    1. Rule IDs named in the question are fetched exactly and ranked first.
+    2. The rest of the top_k comes from vector search (filtered by metadata), optionally reranked.
+    3. Linked rules and definitions are added beyond top_k, so the top-k hit rate still measures search.
+    """
+
+    exact = fetch_documents(list(dict.fromkeys(RULE_ID_PATTERN.findall(question))), "rule id")
+    exact_ids = {c["id"] for c in exact}
+
+    if rerank:
+        candidates = query_chunks(vector, top_k=max(top_k, RERANK_CANDIDATES), filters=filters)
+        candidates = [c for c in candidates if c["id"] not in exact_ids]
+        searched, reranked = rerank_chunks(question, candidates, top_n=max(top_k - len(exact), 0))
+    else:
+        candidates = query_chunks(vector, top_k=top_k + len(exact), filters=filters)
+        searched, reranked = [c for c in candidates if c["id"] not in exact_ids], False
+
+    primary = (exact + searched)[:top_k]
+    return primary, expand_linked_rules(primary), reranked
 
 
 def pinecone_health() -> dict:

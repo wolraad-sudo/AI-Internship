@@ -4,6 +4,7 @@ Calls the API (it stays the source of truth) and prints a Markdown table for the
 
 Run:
     python golden_eval.py --base-url https://ai-eng-wolraad.onrender.com --out golden_results.md
+    python golden_eval.py --set cdd --base-url https://ai-eng-wolraad.onrender.com --out cdd_golden_results.md
 
 Checks:
 - Retrieval hit: a chunk from the expected document containing the key evidence sentence is in the top 5
@@ -143,6 +144,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base-url", default=os.getenv("RAG_API_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--out", type=Path, help="Also write the Markdown to this file (UTF-8)")
+    parser.add_argument(
+        "--set", choices=["northwind", "cdd"], default="northwind",
+        help="northwind: Northwind sample pack; cdd: CDD Periodic Review Policy v3.2",
+    )
     args = parser.parse_args()
     base_url = args.base_url.rstrip("/")
     sys.stdout.reconfigure(encoding="utf-8")  # Windows consoles default to cp1252, which has no ✅.
@@ -150,7 +155,11 @@ def main() -> int:
     judge = OpenAI()
     rows, notes = [], []
     with httpx.Client(base_url=base_url, timeout=120) as api:
-        for n, item in enumerate(GOLDEN, start=1):
+        if args.set == "cdd":
+            from cdd_golden_set import CDD_GOLDEN as golden
+        else:
+            golden = GOLDEN
+        for n, item in enumerate(golden, start=1):
             question = item["question"]
             should_refuse = item["doc"] is None
 
@@ -161,7 +170,10 @@ def main() -> int:
             citations = response["answer"].get("citations", [])
             refused = answer.strip() == REFUSAL_TEXT
 
-            if [c["id"] for c in chunks] != response["retrieved_chunk_ids"]:
+            # /ask also returns linked rules and definitions added on top of the top_k; compare search results only.
+            expanded_ids = set(response.get("expanded_chunk_ids") or [])
+            searched_ids = [cid for cid in response["retrieved_chunk_ids"] if cid not in expanded_ids]
+            if [c["id"] for c in chunks] != searched_ids:
                 notes.append(f"Q{n}: /debug/retrieve and /ask retrieved different chunks")
 
             if should_refuse:
@@ -177,18 +189,20 @@ def main() -> int:
                     faithful = True
                     notes.append(f"Q{n}: refused although the answer is in {item['doc']}")
                 else:
-                    verdict = judge_faithfulness(judge, answer, chunks)
+                    # Judge against everything the model saw, including linked rules and definitions.
+                    verdict = judge_faithfulness(judge, answer, chunks + retrieved.get("expanded", []))
                     faithful = verdict.faithful
                     if not faithful:
                         notes.append(f"Q{n}: judge says unfaithful - {verdict.reason}")
                 correct = not refused and all(re.search(p, answer, re.IGNORECASE) for p in item["must_match"])
 
             got = answer + (f" [{', '.join(citations)}]" if citations and "[" not in answer else "")
+            got = " ".join(got.split())  # Keep multi-line answers on one table row.
             rows.append((n, question, item["expected"], got.replace("|", "\\|"), hit, faithful, correct))
 
     answerable = [r for r in rows if r[4] is not None]
     lines = []
-    lines.append(f"### Golden-set eval - `{base_url}` (top_k={TOP_K})\n")
+    lines.append(f"### Golden-set eval ({args.set}) - `{base_url}` (top_k={TOP_K})\n")
     lines.append("| # | Question | Expected | Service answer | Retrieval hit (top-5) | Faithful | Correct |")
     lines.append("|---|---|---|---|---|---|---|")
     for n, question, expected, got, hit, faithful, correct in rows:

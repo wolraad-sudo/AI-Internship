@@ -197,6 +197,77 @@ python golden_eval.py --base-url https://ai-eng-wolraad.onrender.com --out golde
 
 **Summary:** retrieval hit 8/8 · faithful 10/10 · correct 10/10 (including 2 refusal questions).
 
+### CDD policy as a RAG source (KYC architecture, Session 2)
+
+The CDD Periodic Review Policy follows `KYC_Refresh_Agent_Architecture.docx`, Session 2:
+
+| Doc rule | How it's done here |
+|---|---|
+| 1. Chunk by rule | `ingest_policy_rules.py`: one document per rule (`document_id` = rule ID), text prefixed `CDD-6 Proof of residential address › CDD-6.3 Periodic review`; the CDD-4.1 table stays whole |
+| 2. Metadata | `rule_id`, `topic` (e.g. `address`), `applies_to`, `review_context` (`periodic` / `event-driven` / `new person` / `all`), `references` (rule IDs in the text plus hand-checked links such as CDD-6.3 → CDD-6.2), `policy_version` (`3.2, effective 2025-01-01`) |
+| 3. Hybrid retrieval | Rule IDs in a question ("get CDD-5.3") are fetched exactly and ranked first; the rest is embedding search (reranked), narrowed by `filters`; then `references` are followed one hop and CDD-1.3 / CDD-1.4 are always added. Linked rules come back in `expanded_chunk_ids`, on top of `top_k` |
+| 4. Numbers extracted once | `extract_rule_params.py` writes `cdd_rule_params.json` (e.g. CDD-6.3 → `max_age_months: 12, refresh_max_age_months: 3, must_match_registers: true`); check it by hand, set `"reviewed": true`, re-ingest. Stored per chunk as `parameters` + `parameters_reviewed` |
+| 5. Checkable citations | `/ask` rejects any answer citing a document not retrieved in that run (or a non-refusal with no citations): one retry, then HTTP 502 |
+| 6. Own evals | `cdd_golden_set.py`: 30 questions with the rule each should retrieve, scored by `golden_eval.py --set cdd` |
+
+```powershell
+python extract_rule_params.py "C:\path\to\CDD_Periodic_Review_Policy_v3.2.md"     # then review cdd_rule_params.json
+python ingest_policy_rules.py "C:\path\to\CDD_Periodic_Review_Policy_v3.2.md" --base-url https://ai-eng-wolraad.onrender.com
+```
+
+```powershell
+# Filters: topic, review_context, applies_to, rule_id, document_id, policy_version
+Invoke-RestMethod -Method Post -Uri "https://ai-eng-wolraad.onrender.com/ask" -ContentType "application/json" `
+    -Body '{"question": "How old can a proof of address be?", "filters": {"topic": "address", "review_context": "periodic"}}' | ConvertTo-Json -Depth 5
+```
+
+### Golden-set eval: CDD Periodic Review Policy
+
+`cdd_golden_set.py` holds 30 questions on the synthetic CDD Periodic Review Policy v3.2 (ingested rule by rule with
+`ingest_policy_rules.py`, so `document_id` is the rule ID): 28 answerable, covering 24 rules, and 2 that must be refused.
+Every expected answer and evidence sentence was checked against the policy text. Scoring is the same as above.
+
+```powershell
+python golden_eval.py --set cdd --base-url https://ai-eng-wolraad.onrender.com --out cdd_golden_results.md
+```
+
+#### Results - `https://ai-eng-wolraad.onrender.com` (top_k=5)
+
+| # | Question | Expected | Service answer | Retrieval hit (top-5) | Faithful | Correct |
+|---|---|---|---|---|---|---|
+| 1 | What shareholding makes a shareholder a relevant person? | 10% or more of the issued shares | A shareholder becomes a relevant person if they hold 10% or more of the issued shares, either as an individual or a corporate shareholder [CDD-1.2]. | ✅ | ✅ | ✅ |
+| 2 | What risk ratings can a client entity have? | Low, Medium or High | A client entity can have one of three risk ratings: Low, Medium, or High [CDD-2.1]. | ✅ | ✅ | ✅ |
+| 3 | How many corporate layers between the entity and its ultimate beneficial owners force a High rating? | More than two | More than two corporate layers between the entity and its ultimate beneficial owners force a High rating [CDD-2.3]. | ✅ | ✅ | ✅ |
+| 4 | How often must High and Medium risk clients be reviewed? | Every 12 months | High and Medium risk clients must be reviewed every 12 months, measured from the last review date [CDD-3.1]. | ✅ | ✅ | ✅ |
+| 5 | How often must Low risk clients be reviewed? | Every 24 months | Low risk clients must be reviewed every 24 months [CDD-3.1]. | ✅ | ✅ | ✅ |
+| 6 | Within how many days must an event-driven review be completed? | Within 30 days of the Firm becoming aware of the event | An event-driven review must be completed within 30 days of the Firm becoming aware of the event [CDD-3.3]. | ✅ | ✅ | ✅ |
+| 7 | Does the appointment of a new director trigger an event-driven review? | Yes | Yes, the appointment of a new director triggers an event-driven review, which must be completed within 30 days of the Firm becoming aware of the event [CDD-3.3]. | ✅ | ✅ | ✅ |
+| 8 | Is someone with exactly 25% a beneficial owner? | Yes - the 25% threshold is inclusive | Yes, someone with exactly 25% is considered a beneficial owner [CDD-4.2]. | ✅ | ✅ | ✅ |
+| 9 | If a person owns 100% of a company that holds 45% of the client, what is their indirect ownership? | 45% | Their indirect ownership is 45%. Indirect ownership is calculated by multiplying percentages through each layer, so 100% of a company that holds 45% results in 45% indirect ownership [CDD-4.3]. | ✅ | ✅ | ✅ |
+| 10 | Is a driving licence acceptable as the only identity document? | No - passport or national ID card with photo | No, a driving licence is not accepted as the sole identity document. [CDD-5.1] | ✅ | ✅ | ✅ |
+| 11 | If an identity document expires soon after the review date, when must a renewed document be requested? | If it expires within 90 days after the review date | If an identity document expires within 90 days after the review date, the renewed document must be requested as an outstanding item [CDD-5.2]. | ✅ | ✅ | ✅ |
+| 12 | How recent must the certification on a copy of an identity document be? | Dated within 3 months before the Firm receives the copy | The certification on a copy of an identity document must be dated within 3 months before the Firm receives the copy [CDD-5.3]. | ✅ | ✅ | ✅ |
+| 13 | Who can certify a copy of an identity document? | Attorney-at-law, notary public, chartered accountant, bank officer, or officer of a regulated CSP | A copy of an identity document can be certified by an attorney-at-law, notary public, chartered accountant, bank officer, or an officer of a regulated corporate services provider. The certification must include the certifier's name, capacity, signature, and date, and must be dated within 3 months before the Firm receives the copy. [CDD-5.3] | ✅ | ✅ | ✅ |
+| 14 | Is a mobile phone bill acceptable proof of address? | No - utility bills must be electricity, water or landline | No, a mobile phone bill is not acceptable proof of address. [CDD-6.1] | ✅ | ✅ | ✅ |
+| 15 | Is a PO Box acceptable as a residential address? | No | No, a PO Box is not acceptable as a residential address. The proof of address document must show the person's name and residential address, and a PO Box is specifically stated as not acceptable [CDD-6.1]. | ✅ | ✅ | ✅ |
+| 16 | How recent must proof of address be for a new relevant person? | Dated within 3 months before receipt | For a new relevant person, the proof of address must be dated within 3 months before receipt [CDD-6.2]. | ✅ | ✅ | ✅ |
+| 17 | At a periodic review, how old can an existing proof of address be and still be accepted? | Within 12 months of the review date, if the address matches the registers | At a periodic review, an existing proof of address is acceptable if it is dated within 12 months of the review date and the address on it matches the registers [CDD-6.3]. | ✅ | ✅ | ✅ |
+| 18 | What documents must the Firm hold for a corporate shareholder of 10% or more? | Certificate of incorporation, register of directors, register of members, certificate of good standing | For a corporate shareholder of 10% or more, the Firm must hold the following documents: the certificate of incorporation, the register of directors, the register of members, and a certificate of good standing (or equivalent) [CDD-7.1]. | ✅ | ✅ | ✅ |
+| 19 | How recent must a certificate of good standing be? | Within 6 months of the review date | A certificate of good standing must be dated within 6 months of the review date [CDD-7.2]. | ✅ | ✅ | ✅ |
+| 20 | How recent must a corporate shareholder's register of directors and register of members be? | Within 12 months of the review date | The corporate shareholder's register of directors and register of members must be dated within 12 months of the review date [CDD-7.3]. | ✅ | ✅ | ✅ |
+| 21 | What is needed when a person's name differs because of marriage? | A certified copy of the linking document, e.g. a marriage certificate | When a person's name differs because of marriage, a certified copy of the linking document, such as a marriage certificate, is required. The certification must follow the guidelines in CDD-5.3 [CDD-8.2]. | ✅ | ✅ | ✅ |
+| 22 | When must a new director be screened? | Before their appointment | A new director must be screened before their appointment as a director. If the appointment occurs without prior screening, it is considered a breach and must be reported to the MLRO [CDD-9.2]. | ✅ | ✅ | ✅ |
+| 23 | Within how many days must the beneficial ownership register be updated after a change? | Within 30 days of the Firm becoming aware of the change | The beneficial ownership register must be updated within 30 days of the Firm becoming aware of a change in beneficial ownership [CDD-10.1]. | ✅ | ✅ | ✅ |
+| 24 | Above what acquisition amount must source of funds be corroborated with documentary evidence? | A single acquisition over US$500,000 (or a High-rated client) | The source of funds must be corroborated with documentary evidence if a single acquisition exceeds US$500,000 or if the client is rated as High [CDD-10.3]. | ✅ | ✅ | ✅ |
+| 25 | What is the standard response period for a consolidated client request? | 30 days | The standard response period for a consolidated client request is 30 days [CDD-11.1]. | ✅ | ✅ | ✅ |
+| 26 | What happens to an item outstanding for more than 90 days after it was first requested? | Escalated to the MLRO, who decides whether to restrict services | An item outstanding for more than 90 days after it was first requested must be escalated to the MLRO, who decides whether to restrict services [CDD-11.2]. | ✅ | ✅ | ✅ |
+| 27 | What statuses can an item take in a review record? | OK, Missing, Expired, Stale | An item in a review record can take one of four statuses: OK (meets the rule), Missing (not on file), Expired (past its expiry date), or Stale (older than the rule allows) [CDD-12.2]. | ✅ | ✅ | ✅ |
+| 28 | Who must approve a review prepared with automated assistance? | A Compliance Analyst | A review prepared with automated assistance must be approved by a Compliance Analyst [CDD-12.4]. | ✅ | ✅ | ✅ |
+| 29 | What is the Firm's policy on onboarding cryptocurrency exchange clients? | Refuse (not in docs) | I don't know based on the provided documents. | N/A | ✅ | ✅ |
+| 30 | What is the name of the Firm's current MLRO? | Refuse (not in docs) | I don't know based on the provided documents. | N/A | ✅ | ✅ |
+
+**Summary:** retrieval hit 28/28 · faithful 30/30 · correct 30/30 (including 2 refusal questions).
+
 ### Add-on: reranking
 
 Every Northwind policy has the same header fields (Owner, Approver, Next review), so questions about them make

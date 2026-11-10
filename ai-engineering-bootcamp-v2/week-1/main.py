@@ -1,5 +1,6 @@
 """Week 1 live demo — five stages in one file, built up live in class."""
 
+import re
 import time
 from pathlib import Path
 
@@ -51,8 +52,11 @@ GROUNDING_USER_TEMPLATE = """Context:
 
 Question: {question}"""
 
-CONTEXT_CHUNK_TEMPLATE = """--- Chunk {n} | document_id: {document_id} | chunk_id: {chunk_id} | source: {source}
+CONTEXT_CHUNK_TEMPLATE = """--- Chunk {n} | document_id: {document_id} | chunk_id: {chunk_id} | source: {source} | found via: {via}
 {text}"""
+
+# Bracketed inline citations, e.g. "[CDD-5.3]" or "[CDD-5.3, CDD-8.2]".
+INLINE_CITATION = re.compile(r"\[([^\[\]]+)\]")
 
 
 class Answer(BaseModel):
@@ -78,6 +82,8 @@ class AskRequest(BaseModel):
     use_rag: bool = True  # Session 2 — false gives the exact Session 1 behaviour and response.
     top_k: int = 5  # Session 2 — how many chunks to retrieve (1–20).
     rerank: bool = True  # Session 2 add-on — rerank a wider candidate pool before taking top_k.
+    # Metadata filters, e.g. {"topic": "address", "review_context": "periodic", "applies_to": "director"}.
+    filters: dict[str, str] | None = None
 
 
 class AskResponse(BaseModel):
@@ -89,6 +95,8 @@ class AskResponse(BaseModel):
     latency_ms: int
     cost_usd: float
     retrieved_chunk_ids: list[str] | None = None  # Session 2 — omitted when use_rag is false.
+    # Linked rules (references, one hop) and definitions added on top of the top_k; also in retrieved_chunk_ids.
+    expanded_chunk_ids: list[str] | None = None
     reranked: bool | None = None  # Whether reranking ran (false if off or it fell back to vector order).
 
 
@@ -129,10 +137,41 @@ def format_context(matches: list[dict]) -> str:
             document_id=match["document_id"],
             chunk_id=match["id"],
             source=match["source"],
+            via=match.get("via", "search"),
             text=match["text"],
         )
         for n, match in enumerate(matches, start=1)
     )
+
+
+def check_filters(filters: dict[str, str] | None) -> None:
+    unknown = set(filters or {}) - rag.FILTERABLE_FIELDS
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown filter field(s) {sorted(unknown)}; allowed: {sorted(rag.FILTERABLE_FIELDS)}",
+        )
+
+
+def citation_problems(answer: "GroundedAnswer", retrieved_document_ids: set[str]) -> list[str]:
+    """
+    Code check from the KYC architecture doc: every citation must name a document retrieved in this run.
+    Anything else is rejected (the answer is retried, then refused with a 502), never silently dropped.
+    """
+
+    cited = list(answer.citations)
+    for group in INLINE_CITATION.findall(answer.answer):
+        cited += [part.strip() for part in group.split(",")]
+    problems = []
+    not_retrieved = sorted({c for c in cited if c not in retrieved_document_ids})
+    if not_retrieved:
+        problems.append(f"cites {not_retrieved}, which were not retrieved in this run")
+    refused = answer.answer.strip() == REFUSAL_TEXT
+    if not refused and not answer.citations:
+        problems.append("answer has no citations")
+    if refused and answer.citations:
+        problems.append("a refusal must not cite documents")
+    return problems
 
 
 def build_messages(question: str, context: str | None) -> list[dict]:
@@ -216,6 +255,7 @@ def ask(body: AskRequest) -> AskResponse:
 
     context: str | None = None
     retrieved_chunk_ids: list[str] | None = None
+    expanded_chunk_ids: list[str] | None = None
     retrieved_document_ids: set[str] = set()
     embedding_tokens = 0
     reranked: bool | None = None
@@ -226,6 +266,7 @@ def ask(body: AskRequest) -> AskResponse:
             raise HTTPException(status_code=400, detail="question is empty")
         if not 1 <= body.top_k <= 20:
             raise HTTPException(status_code=400, detail="top_k must be between 1 and 20")
+        check_filters(body.filters)
 
         # Embed and retrieve once, outside the retry loop, so a retry doesn't pay for them twice.
         try:
@@ -233,11 +274,15 @@ def ask(body: AskRequest) -> AskResponse:
         except OpenAIError as exc:
             raise HTTPException(status_code=502, detail=f"Embedding failed: {exc}") from exc
         try:
-            matches, reranked = rag.retrieve(question, vectors[0], top_k=body.top_k, rerank=body.rerank)
+            primary, expanded, reranked = rag.retrieve(
+                question, vectors[0], top_k=body.top_k, rerank=body.rerank, filters=body.filters
+            )
         except Exception as exc:  # Pinecone missing key, unreachable, or index not created yet.
             raise HTTPException(status_code=503, detail=f"Vector store query failed: {exc}") from exc
 
+        matches = primary + expanded
         retrieved_chunk_ids = [match["id"] for match in matches]
+        expanded_chunk_ids = [match["id"] for match in expanded]
         retrieved_document_ids = {match["document_id"] for match in matches}
 
         # Nothing indexed to ground on — refuse without paying for an LLM call.
@@ -251,6 +296,7 @@ def ask(body: AskRequest) -> AskResponse:
                 latency_ms=int((time.perf_counter() - start) * 1000),
                 cost_usd=round(rag.embedding_cost_usd(embedding_tokens), 6),
                 retrieved_chunk_ids=[],
+                expanded_chunk_ids=[],
                 reranked=reranked,
             )
         context = format_context(matches)
@@ -270,10 +316,10 @@ def ask(body: AskRequest) -> AskResponse:
                 )
 
             if isinstance(answer, GroundedAnswer):
-                # Keep only citations that point at a chunk we actually retrieved.
-                answer.citations = [
-                    doc_id for doc_id in dict.fromkeys(answer.citations) if doc_id in retrieved_document_ids
-                ]
+                answer.citations = list(dict.fromkeys(answer.citations))
+                problems = citation_problems(answer, retrieved_document_ids)
+                if problems:
+                    raise ValueError(f"Citation check failed: {'; '.join(problems)}")
 
             latency_ms = int((time.perf_counter() - start) * 1000)
             cost_usd = compute_cost_usd(model, prompt_tokens, completion_tokens)
@@ -286,16 +332,17 @@ def ask(body: AskRequest) -> AskResponse:
                 latency_ms=latency_ms,
                 cost_usd=round(cost_usd, 6),
                 retrieved_chunk_ids=retrieved_chunk_ids,
+                expanded_chunk_ids=expanded_chunk_ids,
                 reranked=reranked,
             )
         except (ValidationError, ValueError) as exc:
             last_error = str(exc)
             continue
 
-    # Clean failure — never leak a half-parsed response to the client.
+    # Clean failure — never leak a half-parsed or wrongly cited response to the client.
     raise HTTPException(
         status_code=502,
-        detail=f"Model response failed schema validation after retry: {last_error}",
+        detail=f"Model response failed validation after retry: {last_error}",
     )
 
 
@@ -351,14 +398,22 @@ def ingest(body: IngestRequest) -> IngestResponse:
 
 
 @app.get("/debug/retrieve")
-def debug_retrieve(q: str = "", top_k: int = 5, rerank: bool = True) -> dict:
+def debug_retrieve(
+    q: str = "",
+    top_k: int = 5,
+    rerank: bool = True,
+    topic: str | None = None,
+    review_context: str | None = None,
+    applies_to: str | None = None,
+) -> dict:
     """
-    Retrieval only — embeds the question and returns the nearest chunks. Never calls the LLM,
-    so you can check what /ask would see before wiring generation.
+    Retrieval only — embeds the question and returns what /ask would see, without calling the LLM:
+    `matches` are the top_k (exact rule IDs first, then search); `expanded` are linked rules and
+    definitions added on top. topic / review_context / applies_to filter on chunk metadata.
 
     Example:
         curl -s "http://127.0.0.1:8000/debug/retrieve?q=How%20many%20days%20of%20leave"
-        Invoke-RestMethod "http://127.0.0.1:8000/debug/retrieve?q=How many days of leave" | ConvertTo-Json -Depth 5
+        Invoke-RestMethod "http://127.0.0.1:8000/debug/retrieve?q=How old can proof of address be&topic=address&review_context=periodic" | ConvertTo-Json -Depth 6
     """
 
     question = q.strip()
@@ -372,14 +427,23 @@ def debug_retrieve(q: str = "", top_k: int = 5, rerank: bool = True) -> dict:
     except OpenAIError as exc:
         raise HTTPException(status_code=502, detail=f"Embedding failed: {exc}") from exc
 
+    filters = {
+        field: value
+        for field, value in {"topic": topic, "review_context": review_context, "applies_to": applies_to}.items()
+        if value
+    } or None
+
     try:
-        matches, reranked = rag.retrieve(question, vectors[0], top_k=top_k, rerank=rerank)
+        matches, expanded, reranked = rag.retrieve(
+            question, vectors[0], top_k=top_k, rerank=rerank, filters=filters
+        )
     except Exception as exc:  # Pinecone missing key, unreachable, or index not created yet.
         raise HTTPException(status_code=503, detail=f"Vector store query failed: {exc}") from exc
 
     return {
         "query": question,
         "top_k": top_k,
+        "filters": filters,
         "reranked": reranked,
         "rerank_model": rag.RERANK_MODEL if reranked else None,
         "embedding_model": rag.EMBEDDING_MODEL,
@@ -389,6 +453,7 @@ def debug_retrieve(q: str = "", top_k: int = 5, rerank: bool = True) -> dict:
         "cost_usd": round(rag.embedding_cost_usd(tokens_used), 8),
         "match_count": len(matches),
         "matches": matches,
+        "expanded": expanded,
     }
 
 
