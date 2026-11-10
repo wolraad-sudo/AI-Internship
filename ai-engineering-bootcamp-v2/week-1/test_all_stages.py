@@ -112,8 +112,9 @@ def test_stage4(base: str) -> bool:
 
 def test_stage5(base: str) -> bool:
     print("\n=== Stage 5: cost readout ===")
-    _, mini = post(base, {"question": QUESTION, "model": "gpt-4o-mini"})
-    status, full = post(base, {"question": QUESTION, "model": "gpt-4o"})
+    # use_rag off: stage 5 checks the Session 1 response shape; RAG is Session 2.
+    _, mini = post(base, {"question": QUESTION, "model": "gpt-4o-mini", "use_rag": False})
+    status, full = post(base, {"question": QUESTION, "model": "gpt-4o", "use_rag": False})
     ok = True
     ok &= check("status", status == 200, f"HTTP {status}")
     ok &= check("cost_usd", isinstance(full.get("cost_usd"), (int, float)) and full["cost_usd"] > 0, f"cost_usd={full.get('cost_usd')}")
