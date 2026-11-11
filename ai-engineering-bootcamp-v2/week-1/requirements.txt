@@ -5,3 +5,4 @@ python-dotenv
 streamlit
 pinecone
 langchain-text-splitters
+google-adk>=2.14,<3

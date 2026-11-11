@@ -26,7 +26,9 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # The sample uses gemini-2.5-flash, which Google no longer serves to new API keys (404). On 2026-11-10
 # gemini-3.8/3.7-flash returned 503 "high demand" while 3.5-flash answered. Override with CDD_AGENT_MODEL in .env.
-MODEL = os.getenv("CDD_AGENT_MODEL", "gemini-3.5-flash")
+MODEL = os.getenv("CDD_AGENT_MODEL") or "gemini-3.5-flash"  # `or`: an empty value in .env also falls back.
+
+MODEL_CALL_TIMEOUT_MS = 90_000  # One Gemini call; thinking on a long prompt can take tens of seconds.
 
 # Step limit: each model call is one Think -> Act turn. 4 tools plus a few retries fit well inside 12.
 MAX_LLM_CALLS = 12
@@ -79,10 +81,13 @@ def enforce_step_limit(callback_context: CallbackContext, llm_request: LlmReques
 
 root_agent = Agent(
     name="cdd_review_agent",
-    # Gemini wrapper only to add retries: 429/503 "high demand" errors are common and usually pass in seconds.
+    # Gemini wrapper to add retries (503 "high demand" usually passes in seconds) and a per-call timeout:
+    # without one, a hung request blocks the run (and POST /agent) indefinitely. 429 is NOT retried: on the
+    # free tier it means the 20-requests-per-day-per-model quota is gone, and every retry counts against it.
     model=Gemini(
         model=MODEL,
-        retry_options=types.HttpRetryOptions(attempts=5, initial_delay=2, max_delay=30, http_status_codes=[429, 500, 503]),
+        retry_options=types.HttpRetryOptions(attempts=5, initial_delay=2, max_delay=30, http_status_codes=[500, 503]),
+        client_kwargs={"http_options": types.HttpOptions(timeout=MODEL_CALL_TIMEOUT_MS)},
     ),
     description="Drafts a CDD periodic review record for one case and stops for analyst approval.",
     instruction=INSTRUCTION,

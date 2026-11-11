@@ -1,5 +1,6 @@
 """Week 1 live demo — five stages in one file, built up live in class."""
 
+import asyncio
 import re
 import time
 from pathlib import Path
@@ -455,6 +456,75 @@ def debug_retrieve(
         "matches": matches,
         "expanded": expanded,
     }
+
+
+class AgentRequest(BaseModel):
+    """Session 3 — a goal for the CDD review agent, e.g. "New case file: CASE-2026-0147. Prepare the review."."""
+
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class AgentStep(BaseModel):
+    """One tool call: what the agent did (Act) and what came back (Observe), both truncated."""
+
+    step: int
+    tool: str
+    args: str
+    observation: str | None  # None only if the run stopped before the tool answered.
+
+
+class AgentResponse(BaseModel):
+    answer: str
+    steps: list[AgentStep]
+    model: str
+    model_turns: int
+    latency_ms: int
+
+
+# Whole-run cap for POST /agent, so a slow model can't hold a request open indefinitely.
+AGENT_TIMEOUT_S = 300
+
+
+@app.post("/agent")
+async def agent(body: AgentRequest) -> AgentResponse:
+    """
+    Session 3 — run the Google ADK CDD review agent (cdd_agent/) on one message.
+    It reads the case files, searches the policy in Pinecone, saves review_record_draft.json as
+    PENDING_ANALYST_APPROVAL, and returns its final answer plus the tool calls it made.
+    Secrets are never returned: steps hold only tool names, truncated args/observations, and any
+    secret env value that appears in them is replaced with ***.
+
+    Example:
+        curl -s -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" \
+          -d '{"message": "New case file: CASE-2026-0147. Prepare the review."}'
+    """
+
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is empty")
+    try:
+        # Imported here so /ask and /ingest keep working if google-adk isn't installed or the agent fails to load.
+        from cdd_agent.runner import describe_error, run_agent
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Agent unavailable: {type(exc).__name__}") from exc
+
+    start = time.perf_counter()
+    try:
+        run = await asyncio.wait_for(run_agent(message), timeout=AGENT_TIMEOUT_S)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504, detail=f"Agent did not finish within {AGENT_TIMEOUT_S} s; nothing is approved."
+        ) from exc
+    except Exception as exc:  # Gemini down/overloaded after retries, missing GOOGLE_API_KEY, ...
+        raise HTTPException(status_code=502, detail=f"Agent run failed: {describe_error(exc)}") from exc
+
+    return AgentResponse(
+        answer=run.answer,
+        steps=[AgentStep(**step) for step in run.steps],
+        model=run.model,
+        model_turns=run.model_turns,
+        latency_ms=int((time.perf_counter() - start) * 1000),
+    )
 
 
 @app.get("/health/pinecone")

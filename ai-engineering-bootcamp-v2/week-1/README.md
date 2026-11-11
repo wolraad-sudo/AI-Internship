@@ -344,6 +344,54 @@ python -m google.adk.cli web .
 
 `cases/CASE-2026-0147/` is a made-up sample case. `EXPECTED.md` in that folder is its answer key.
 
+### POST /agent
+
+`POST /agent` runs the same agent from the FastAPI app.
+- **Request:** a JSON body with a `message` of 1 to 2000 characters.
+- **Response:**
+  - `answer`
+  - `steps[]`: one entry per tool call, with `tool`, plus `args` and `observation` truncated to 300 characters
+  - `model`, `model_turns` and `latency_ms`
+- **No secrets are returned.** Responses contain no env values, and any env value whose name contains KEY, TOKEN, SECRET or PASSWORD is replaced with `***` if a tool error echoes it.
+- **Errors:**
+  - 400: empty message
+  - 422: missing field
+  - 502: Gemini error, e.g. 429 quota or 503 busy, with the cause in `detail`
+  - 503: the agent can't load
+- **`/ask` and `/ingest` are unaffected.** ADK is only imported when `/agent` is called.
+
+A run takes about 30 to 90 seconds and writes `cases/<id>/review_record_draft.json` on the server. On Render that disk is temporary.
+
+Limits:
+- **Per model call:** 90 seconds, retried on 500/503.
+- **Whole request:** 300 seconds, then a 504.
+- **Free-tier quota:** Gemini allows **20 requests per day per model**, and one review uses about 7. A 429 isn't retried, because retries only burn the remaining quota. When a model is used up, set `CDD_AGENT_MODEL` to another one, e.g. `gemini-3.7-flash` or `gemini-3.5-flash-lite`, or enable billing.
+
+Tested on 2026-11-10 with `gemini-3.5-flash-lite`:
+- **Agent run:** HTTP 200 in 27 s, 6 model turns and 5 tool steps, and no `.env` value appears in the response.
+- **Accuracy:** the lite model is less accurate than flash. It marked 1 item Expired and 1 Stale, where `EXPECTED.md` has 0 and 2.
+
+Local (bash or Git Bash):
+
+```bash
+curl -s --max-time 300 -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message": "New case file: CASE-2026-0147. Prepare the review."}'
+```
+
+Local (PowerShell):
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/agent" -ContentType "application/json" -TimeoutSec 300 `
+  -Body '{"message": "New case file: CASE-2026-0147. Prepare the review."}' | ConvertTo-Json -Depth 5
+```
+
+Render:
+
+```bash
+curl -s --max-time 300 -X POST https://ai-eng-wolraad.onrender.com/agent -H "Content-Type: application/json" -d '{"message": "New case file: CASE-2026-0147. Prepare the review."}'
+```
+
+Before the Render call works, add `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI=FALSE` in the service's Environment tab, then redeploy so `google-adk` is installed from `requirements.txt`.
+
 `cdd_agent_run_log.txt` is one successful run (2026-11-10, `gemini-3.5-flash`). It took 7 model turns and 4 `search_policy` calls to Pinecone, and its 10 item statuses match `EXPECTED.md`. The log maps ADK events to labels like this:
 
 | Label | ADK event |
@@ -359,6 +407,8 @@ python -m google.adk.cli web .
 - Build command: `pip install -r requirements.txt`
 - Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 - Environment: set `OPENAI_API_KEY` and `PINECONE_API_KEY` (plus any optional `PINECONE_*` overrides) in the service's Environment tab. `.env` is not deployed.
+  - For `POST /agent`, also set `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI=FALSE`.
+  - Optionally set `CDD_AGENT_MODEL` to choose the Gemini model.
 - After deploy, open `https://<your-service>.onrender.com/health/pinecone` to confirm Pinecone is reachable.
   Don't use it as Render's health check path: a Pinecone outage would then block deploys of `/ask` too.
 
@@ -377,7 +427,7 @@ week-1/
 ├── main.py              # Full system (stages 1–5 combined) + /health/pinecone
 ├── rag.py               # Session 2 Pinecone vector store layer
 ├── serve_stage1.py … serve_stage5.py
-├── cdd_agent/           # Session 3 ADK agent (agent.py = root_agent, tools.py)
+├── cdd_agent/           # Session 3 ADK agent (agent.py = root_agent, tools.py, runner.py used by POST /agent)
 ├── run_cdd_agent.py     # Runs the agent on one case with a Think/Act/Observe trace
 ├── cdd_agent_run_log.txt  # One successful agent run
 ├── cases/               # Sample case files for the agent
