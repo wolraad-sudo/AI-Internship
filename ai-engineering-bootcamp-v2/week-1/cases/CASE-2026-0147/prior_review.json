@@ -1,0 +1,91 @@
+{
+  "_sample": "FICTIONAL prior review for CASE-2026-0147. Invented data for testing only.",
+  "review_id": "REV-2025-0312",
+  "case_id": "CASE-2026-0147",
+  "client_name": "Harbour Lane Holdings Ltd",
+  "review_type": "periodic",
+  "review_date": "2025-11-12",
+  "risk_rating": "Medium",
+  "policy_version": "3.1",
+  "prepared_by": "Compliance Analyst (manual review)",
+  "approved_by": "Compliance Analyst",
+  "approved_on": "2025-11-14",
+  "outcome": "Complete with outstanding items",
+  "next_review_due": "2026-11-12",
+  "items": [
+    {
+      "item_id": "I01",
+      "person_id": "P1",
+      "requirement": "Certified identity document",
+      "rule": "CDD-5.2",
+      "status": "OK",
+      "file_id": "F01-2025"
+    },
+    {
+      "item_id": "I02",
+      "person_id": "P1",
+      "requirement": "Proof of address",
+      "rule": "CDD-6.3",
+      "status": "OK",
+      "file_id": "F02-2025"
+    },
+    {
+      "item_id": "I03",
+      "person_id": "P1",
+      "requirement": "Linking document for change of name (Bello to Okafor)",
+      "rule": "CDD-8.2",
+      "status": "Missing",
+      "notes": "Requested certified marriage certificate."
+    },
+    {
+      "item_id": "I04",
+      "person_id": "P2",
+      "requirement": "Certified identity document",
+      "rule": "CDD-5.2",
+      "status": "OK",
+      "file_id": "F03"
+    },
+    {
+      "item_id": "I05",
+      "person_id": "P2",
+      "requirement": "Proof of address",
+      "rule": "CDD-6.3",
+      "status": "OK",
+      "file_id": "F04"
+    },
+    {
+      "item_id": "I06",
+      "person_id": "P3",
+      "requirement": "Certificate of good standing",
+      "rule": "CDD-7.2",
+      "status": "OK",
+      "file_id": "F05-2025"
+    },
+    {
+      "item_id": "I07",
+      "person_id": "P3",
+      "requirement": "Register of directors and register of members",
+      "rule": "CDD-7.3",
+      "status": "OK",
+      "file_id": "F06-2025"
+    },
+    {
+      "item_id": "I08",
+      "person_id": "client",
+      "requirement": "Screening of all relevant persons",
+      "rule": "CDD-9.2",
+      "status": "OK",
+      "file_id": "F10-2025"
+    }
+  ],
+  "outstanding_items": [
+    {
+      "item_id": "I03",
+      "description": "Certified marriage certificate linking Maria Bello to Maria Okafor",
+      "first_requested": "2025-11-20",
+      "chased_on": ["2026-01-15", "2026-04-10"],
+      "status": "outstanding"
+    }
+  ],
+  "analyst_notes": "Client responsive except for the name-change linking document. Re-chase at next review."
+}

@@ -1,0 +1,140 @@
+{
+  "_sample": "FICTIONAL test case for the Session 3 ADK agent. All names, companies and documents are invented. Files are listed as metadata only; no document images exist.",
+  "case_id": "CASE-2026-0147",
+  "client": {
+    "name": "Harbour Lane Holdings Ltd",
+    "entity_type": "private limited company",
+    "registration_number": "HL-448210",
+    "risk_rating": "Medium"
+  },
+  "review_type": "periodic",
+  "review_date": "2026-11-10",
+  "prior_review_file": "prior_review.json",
+  "policy_version": "3.2",
+  "relevant_persons": [
+    {
+      "person_id": "P1",
+      "name": "Maria Okafor",
+      "former_name": "Maria Bello",
+      "roles": ["director", "shareholder"],
+      "shareholding_pct": 10,
+      "appointed_on": "2019-04-02"
+    },
+    {
+      "person_id": "P2",
+      "name": "David Chen",
+      "roles": ["beneficial owner", "shareholder"],
+      "shareholding_pct": 60,
+      "appointed_on": null
+    },
+    {
+      "person_id": "P3",
+      "name": "Northgate Ventures Ltd",
+      "roles": ["corporate shareholder"],
+      "shareholding_pct": 30,
+      "appointed_on": null
+    },
+    {
+      "person_id": "P4",
+      "name": "Sara Lindqvist",
+      "roles": ["director"],
+      "shareholding_pct": 0,
+      "appointed_on": "2026-08-20",
+      "note": "New director appointed since the prior review."
+    }
+  ],
+  "files": [
+    {
+      "file_id": "F01",
+      "filename": "P1_passport_certified.pdf",
+      "relates_to": "P1",
+      "document_type": "passport",
+      "name_on_document": "Maria Okafor",
+      "issue_date": "2021-06-14",
+      "expiry_date": "2031-06-13",
+      "certified_on": "2026-10-20",
+      "certified_by": "Solicitor"
+    },
+    {
+      "file_id": "F02",
+      "filename": "P1_utility_bill_2026-09.pdf",
+      "relates_to": "P1",
+      "document_type": "utility bill (electricity)",
+      "name_on_document": "Maria Okafor",
+      "issue_date": "2026-09-15",
+      "address": "14 Quay Street, Harbourtown"
+    },
+    {
+      "file_id": "F03",
+      "filename": "P2_passport_certified.pdf",
+      "relates_to": "P2",
+      "document_type": "passport",
+      "name_on_document": "David Chen",
+      "issue_date": "2016-12-31",
+      "expiry_date": "2026-12-31",
+      "certified_on": "2025-11-05",
+      "certified_by": "Notary public"
+    },
+    {
+      "file_id": "F04",
+      "filename": "P2_bank_statement_2025-08.pdf",
+      "relates_to": "P2",
+      "document_type": "bank statement",
+      "name_on_document": "David Chen",
+      "issue_date": "2025-08-01",
+      "address": "3 Alder Rise, Westbury"
+    },
+    {
+      "file_id": "F05",
+      "filename": "P3_certificate_of_good_standing.pdf",
+      "relates_to": "P3",
+      "document_type": "certificate of good standing",
+      "issue_date": "2026-03-01"
+    },
+    {
+      "file_id": "F06",
+      "filename": "P3_register_of_directors_and_members.pdf",
+      "relates_to": "P3",
+      "document_type": "register of directors and register of members",
+      "issue_date": "2026-02-01",
+      "beneficial_owners_listed": ["David Chen"]
+    },
+    {
+      "file_id": "F07",
+      "filename": "client_register_of_beneficial_owners.pdf",
+      "relates_to": "client",
+      "document_type": "register of beneficial owners",
+      "issue_date": "2026-10-01",
+      "beneficial_owners_listed": ["David Chen"]
+    },
+    {
+      "file_id": "F08",
+      "filename": "client_register_of_members.pdf",
+      "relates_to": "client",
+      "document_type": "register of members",
+      "issue_date": "2026-10-01",
+      "members_listed": {
+        "Maria Okafor": 10,
+        "David Chen": 60,
+        "Northgate Ventures Ltd": 30
+      }
+    },
+    {
+      "file_id": "F09",
+      "filename": "client_register_of_directors.pdf",
+      "relates_to": "client",
+      "document_type": "register of directors",
+      "issue_date": "2026-10-01",
+      "directors_listed": ["Maria Okafor", "Sara Lindqvist"]
+    },
+    {
+      "file_id": "F10",
+      "filename": "screening_report_2026-11-03.pdf",
+      "relates_to": "client",
+      "document_type": "screening report",
+      "issue_date": "2026-11-03",
+      "persons_screened": ["P1", "P2", "P3"],
+      "hits": []
+    }
+  ]
+}

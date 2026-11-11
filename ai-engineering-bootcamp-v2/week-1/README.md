@@ -311,12 +311,104 @@ python rerank_eval.py --base-url https://ai-eng-wolraad.onrender.com --out reran
 - rerank off: ❌ "I don't know based on the provided documents." (chunks: POL-101#21, POL-207#11, POL-114#0)
 - rerank on : ✅ "The facilities policy is owned by the Head of Workplace [POL-118]." (chunks: POL-118#0, POL-207#1, POL-114#0)
 
+## Session 3: ADK review agent
+
+This is a single Google ADK agent, `cdd_agent/`, that drafts a CDD periodic review for one case and then stops for analyst approval. It is built on the patterns in `ai-engineering-bootcamp/adk-multi-agent-systems/demo1_routing.py`, minus the router: the job is a single pipeline, so there is nothing to route.
+
+- **Job:** given a case ID, the agent:
+  1. loads `cases/<id>/00_file_index.json` and the prior review
+  2. looks up the rules it needs
+  3. gives every item a status of OK, Missing, Expired or Stale (CDD-12.2)
+  4. saves `cases/<id>/review_record_draft.json` with status `PENDING_ANALYST_APPROVAL` (CDD-12.4)
+- **Tools** (`cdd_agent/tools.py`): `read_file_index`, `get_prior_review`, `search_policy`, `save_review_record`.
+  - **`search_policy` is the real tool.** It reuses the Session 2 retrieval in `rag.py`, the same path as `POST /ask`: an OpenAI embedding, then Pinecone (exact rule IDs plus vector search), then the reranker, then linked rules. It returns each rule's text and parameters.
+  - **Failures come back as data.** An empty query, an OpenAI or Pinecone failure (e.g. a 401 for a bad key) or no matches returns `{"error": ...}`, which the model sees as an observation, so the run doesn't crash. A requested rule that isn't in the index is listed in `missing_rule_ids`.
+  - **It needs** `OPENAI_API_KEY` and `PINECONE_API_KEY` (already in `.env`), and the CDD policy ingested with `ingest_policy_rules.py`.
+- **Step limit:** `MAX_LLM_CALLS = 12` in `cdd_agent/agent.py`, enforced in two places:
+  - a `before_model_callback` that ends the run with a message (this also applies in `adk web`)
+  - `RunConfig(max_llm_calls=...)` as a backstop
+- **Model:** `gemini-3.5-flash` by default; override it with `CDD_AGENT_MODEL` in `.env`. The sample's `gemini-2.5-flash` returns 404 for new API keys.
+- **Env:** `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI=FALSE` in this folder's `.env`. Install ADK with `python -m pip install google-adk`.
+
+Run it in a terminal; it prints a THINK / ACT / OBSERVE trace:
+
+```bash
+python run_cdd_agent.py CASE-2026-0147
+```
+
+Or use ADK's browser UI and pick `cdd_agent` from the list (the `adk` command isn't on PATH with system Python):
+
+```bash
+python -m google.adk.cli web .
+```
+
+`cases/CASE-2026-0147/` is a made-up sample case. `EXPECTED.md` in that folder is its answer key.
+
+### POST /agent
+
+`POST /agent` runs the same agent from the FastAPI app.
+- **Request:** a JSON body with a `message` of 1 to 2000 characters.
+- **Response:**
+  - `answer`
+  - `steps[]`: one entry per tool call, with `tool`, plus `args` and `observation` truncated to 300 characters
+  - `model`, `model_turns` and `latency_ms`
+- **No secrets are returned.** Responses contain no env values, and any env value whose name contains KEY, TOKEN, SECRET or PASSWORD is replaced with `***` if a tool error echoes it.
+- **Errors:**
+  - 400: empty message
+  - 422: missing field
+  - 502: Gemini error, e.g. 429 quota or 503 busy, with the cause in `detail`
+  - 503: the agent can't load
+- **`/ask` and `/ingest` are unaffected.** ADK is only imported when `/agent` is called.
+
+A run takes about 30 to 90 seconds and writes `cases/<id>/review_record_draft.json` on the server. On Render that disk is temporary.
+
+Limits:
+- **Per model call:** 90 seconds, retried on 500/503.
+- **Whole request:** 300 seconds, then a 504.
+- **Free-tier quota:** Gemini allows **20 requests per day per model**, and one review uses about 7. A 429 isn't retried, because retries only burn the remaining quota. When a model is used up, set `CDD_AGENT_MODEL` to another one, e.g. `gemini-3.7-flash` or `gemini-3.5-flash-lite`, or enable billing.
+
+Tested on 2026-11-10 with `gemini-3.5-flash-lite`:
+- **Agent run:** HTTP 200 in 27 s, 6 model turns and 5 tool steps, and no `.env` value appears in the response.
+- **Accuracy:** the lite model is less accurate than flash. It marked 1 item Expired and 1 Stale, where `EXPECTED.md` has 0 and 2.
+
+Local (bash or Git Bash):
+
+```bash
+curl -s --max-time 300 -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message": "New case file: CASE-2026-0147. Prepare the review."}'
+```
+
+Local (PowerShell):
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/agent" -ContentType "application/json" -TimeoutSec 300 `
+  -Body '{"message": "New case file: CASE-2026-0147. Prepare the review."}' | ConvertTo-Json -Depth 5
+```
+
+Render:
+
+```bash
+curl -s --max-time 300 -X POST https://ai-eng-wolraad.onrender.com/agent -H "Content-Type: application/json" -d '{"message": "New case file: CASE-2026-0147. Prepare the review."}'
+```
+
+Before the Render call works, add `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI=FALSE` in the service's Environment tab, then redeploy so `google-adk` is installed from `requirements.txt`.
+
+`cdd_agent_run_log.txt` is one successful run (2026-11-10, `gemini-3.5-flash`). It took 7 model turns and 4 `search_policy` calls to Pinecone, and its 10 item statuses match `EXPECTED.md`. The log maps ADK events to labels like this:
+
+| Label | ADK event |
+|---|---|
+| THINK | a thought part, or plan text before a tool call |
+| ACT | a `function_call` part |
+| OBSERVE | a `function_response` part |
+| ANSWER | text in the final response |
+
 ## Deploy on Render
 
 - Root directory: `ai-engineering-bootcamp-v2/week-1`
 - Build command: `pip install -r requirements.txt`
 - Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 - Environment: set `OPENAI_API_KEY` and `PINECONE_API_KEY` (plus any optional `PINECONE_*` overrides) in the service's Environment tab. `.env` is not deployed.
+  - For `POST /agent`, also set `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI=FALSE`.
+  - Optionally set `CDD_AGENT_MODEL` to choose the Gemini model.
 - After deploy, open `https://<your-service>.onrender.com/health/pinecone` to confirm Pinecone is reachable.
   Don't use it as Render's health check path: a Pinecone outage would then block deploys of `/ask` too.
 
@@ -335,6 +427,10 @@ week-1/
 ├── main.py              # Full system (stages 1–5 combined) + /health/pinecone
 ├── rag.py               # Session 2 Pinecone vector store layer
 ├── serve_stage1.py … serve_stage5.py
+├── cdd_agent/           # Session 3 ADK agent (agent.py = root_agent, tools.py, runner.py used by POST /agent)
+├── run_cdd_agent.py     # Runs the agent on one case with a Think/Act/Observe trace
+├── cdd_agent_run_log.txt  # One successful agent run
+├── cases/               # Sample case files for the agent
 ├── demo_page.py         # Streamlit test UI
 ├── test_all_stages.py   # Automated stage smoke tests
 ├── requirements.txt

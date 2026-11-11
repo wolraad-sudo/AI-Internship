@@ -10,3 +10,6 @@ __pycache__/
 venv/
 .venv/
 env/
+
+# Agent output (regenerated on every run)
+cases/*/review_record_draft.json
