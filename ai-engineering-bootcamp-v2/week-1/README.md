@@ -311,6 +311,48 @@ python rerank_eval.py --base-url https://ai-eng-wolraad.onrender.com --out reran
 - rerank off: ❌ "I don't know based on the provided documents." (chunks: POL-101#21, POL-207#11, POL-114#0)
 - rerank on : ✅ "The facilities policy is owned by the Head of Workplace [POL-118]." (chunks: POL-118#0, POL-207#1, POL-114#0)
 
+## Session 3: ADK review agent
+
+This is a single Google ADK agent, `cdd_agent/`, that drafts a CDD periodic review for one case and then stops for analyst approval. It is built on the patterns in `ai-engineering-bootcamp/adk-multi-agent-systems/demo1_routing.py`, minus the router: the job is a single pipeline, so there is nothing to route.
+
+- **Job:** given a case ID, the agent:
+  1. loads `cases/<id>/00_file_index.json` and the prior review
+  2. looks up the rules it needs
+  3. gives every item a status of OK, Missing, Expired or Stale (CDD-12.2)
+  4. saves `cases/<id>/review_record_draft.json` with status `PENDING_ANALYST_APPROVAL` (CDD-12.4)
+- **Tools** (`cdd_agent/tools.py`): `read_file_index`, `get_prior_review`, `search_policy`, `save_review_record`.
+  - **`search_policy` is the real tool.** It reuses the Session 2 retrieval in `rag.py`, the same path as `POST /ask`: an OpenAI embedding, then Pinecone (exact rule IDs plus vector search), then the reranker, then linked rules. It returns each rule's text and parameters.
+  - **Failures come back as data.** An empty query, an OpenAI or Pinecone failure (e.g. a 401 for a bad key) or no matches returns `{"error": ...}`, which the model sees as an observation, so the run doesn't crash. A requested rule that isn't in the index is listed in `missing_rule_ids`.
+  - **It needs** `OPENAI_API_KEY` and `PINECONE_API_KEY` (already in `.env`), and the CDD policy ingested with `ingest_policy_rules.py`.
+- **Step limit:** `MAX_LLM_CALLS = 12` in `cdd_agent/agent.py`, enforced in two places:
+  - a `before_model_callback` that ends the run with a message (this also applies in `adk web`)
+  - `RunConfig(max_llm_calls=...)` as a backstop
+- **Model:** `gemini-3.5-flash` by default; override it with `CDD_AGENT_MODEL` in `.env`. The sample's `gemini-2.5-flash` returns 404 for new API keys.
+- **Env:** `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI=FALSE` in this folder's `.env`. Install ADK with `python -m pip install google-adk`.
+
+Run it in a terminal; it prints a THINK / ACT / OBSERVE trace:
+
+```bash
+python run_cdd_agent.py CASE-2026-0147
+```
+
+Or use ADK's browser UI and pick `cdd_agent` from the list (the `adk` command isn't on PATH with system Python):
+
+```bash
+python -m google.adk.cli web .
+```
+
+`cases/CASE-2026-0147/` is a made-up sample case. `EXPECTED.md` in that folder is its answer key.
+
+`cdd_agent_run_log.txt` is one successful run (2026-11-10, `gemini-3.5-flash`). It took 7 model turns and 4 `search_policy` calls to Pinecone, and its 10 item statuses match `EXPECTED.md`. The log maps ADK events to labels like this:
+
+| Label | ADK event |
+|---|---|
+| THINK | a thought part, or plan text before a tool call |
+| ACT | a `function_call` part |
+| OBSERVE | a `function_response` part |
+| ANSWER | text in the final response |
+
 ## Deploy on Render
 
 - Root directory: `ai-engineering-bootcamp-v2/week-1`
@@ -335,6 +377,10 @@ week-1/
 ├── main.py              # Full system (stages 1–5 combined) + /health/pinecone
 ├── rag.py               # Session 2 Pinecone vector store layer
 ├── serve_stage1.py … serve_stage5.py
+├── cdd_agent/           # Session 3 ADK agent (agent.py = root_agent, tools.py)
+├── run_cdd_agent.py     # Runs the agent on one case with a Think/Act/Observe trace
+├── cdd_agent_run_log.txt  # One successful agent run
+├── cases/               # Sample case files for the agent
 ├── demo_page.py         # Streamlit test UI
 ├── test_all_stages.py   # Automated stage smoke tests
 ├── requirements.txt
